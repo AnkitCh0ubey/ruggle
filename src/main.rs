@@ -6,18 +6,17 @@ use std::path::{Path, PathBuf};
 use xml::common::{Position, TextPosition};
 use std::result::Result;
 use std::process::ExitCode;
+use tiny_http::{Header, Request, Response, Server};
 
 #[derive(Debug)]
 struct Lexer<'a> {
    content: &'a [char],
 }
 
-
 impl<'a> Lexer<'a> {
    fn new(content: &'a [char]) -> Self{
       Self{ content }
    }
-
 
    //removes white space
    fn trim_left(&mut self){
@@ -25,7 +24,6 @@ impl<'a> Lexer<'a> {
          self.content = &self.content[1..]; 
       }
    }
-
 
    //predicate is used to pass a condition similar to modifiers in solidity
    fn chop_while<P>(&mut self, mut predicate: P) -> &'a [char] 
@@ -40,7 +38,6 @@ impl<'a> Lexer<'a> {
 
    }
 
-
    // to get the set of characters from lexer
    fn chop(&mut self, n: usize) -> &'a [char]{
 
@@ -48,7 +45,6 @@ impl<'a> Lexer<'a> {
       self.content = &self.content[n..]; 
       token 
    }
-
 
    //this method is used to tokenize the string from the document, similar to how a StringTokenizer works in Java
    fn next_token(&mut self) -> Option<&'a [char]> {
@@ -70,7 +66,6 @@ impl<'a> Lexer<'a> {
       Some(self.chop(1))
    }
 }
-
 
 // Since we implemented an iterator for lexer, it will give us a vector(array) of characters of the words.
 impl<'a> Iterator for Lexer<'a> {
@@ -108,61 +103,13 @@ type TermFrequency = HashMap<String, usize>;
 type IndexTF = HashMap<PathBuf, TermFrequency>;
 
 
-/*
-fn main() -> io::Result<()> {
-   let index_path = "index.json";
-   let index_file = File::open(index_path)?;
-   let result: IndexTF = serde_json::from_reader(index_file).expect("Uhh No something went wrong");
-   println!("{index_path} contains {number} files", number = result.len());
-   Ok(())
-}
-
-fn main2() -> io::Result<()>{
-
-   let dir_path = "docs.gl/gl4";
-   let dir = fs::read_dir(dir_path)?;
-   let mut index_term_frequency = IndexTF::new();
-
-
-   for file in dir
-   {
-      let file_path = file?.path();
-      println!("Processing file: {:?}", &file_path);
-      let content = read_entire_xml_file(&file_path)?
-         .chars()
-         .collect::<Vec<_>>();
-
-      let mut tf = TermFrequency::new(); 
-      for token in Lexer::new(&content) 
-      {
-         let term = token.iter().map(|x| x.to_ascii_uppercase()).collect::<String>();
-         if let Some(freq) = tf.get_mut(&term) {
-            *freq += 1;
-         }else {
-            tf.insert(term, 1);
-         }
-      }
-      let mut stats = tf.iter().collect::<Vec<_>>();
-      stats.sort_by_key(|(_,f)| *f);
-      stats.reverse();
-      index_term_frequency.insert(file_path, tf);     
-   }
-   let index_path = "index.json";
-   let index_file = File::create(index_path)?;
-   println!("Saving {index_path}....");
-   serde_json::to_writer_pretty(index_file, &index_term_frequency).expect("Serde is working fine");
-   
-   Ok(())
-}
-*/
-
 fn tf_index_of_folder(dir_path: &Path, index_term_frequency: &mut IndexTF) -> Result<(),()> {
 
       let dir = fs::read_dir(dir_path).map_err(|err|{
          eprintln!("ERROR: could not open directory {dir_path} for indexing: {err}", dir_path = dir_path.display());
       })?;
       
-      // IMPORTANT new lifetime thing that implements recursion 
+      // IMPORTANT 'next_file works like labelled loops in java 
       'next_file: for file in dir{
          let file = file.map_err(|e| {
             eprintln!("ERROR: could not read next file in the directory {dir_path} during indexing:{e}", dir_path = dir_path.display());
@@ -240,10 +187,27 @@ fn usage(program: &str){
    eprintln!("Usage: {program} [SUBCOMMAND] [OPTIONS]");
    eprintln!("Subcommands:");
    eprintln!("    index <folder>          index the <folder> and save the index to index.json file");
-   eprintln!("    search <index-file>     check how many documents are indexed in te file (searching is not implementred yet)");
-   eprintln!("tiny-http");
+   eprintln!("    search <index-file>     check how many documents are indexed in the file (searching is not implementred yet)");
+   eprintln!("    serve                   to start the http server in a web interface");
 }
 
+
+fn serve_request(request: Request) -> Result<(),()> {
+   println!("Received requests! method: {:?}, url: {:?}", request.method(), request.url());
+
+   let content_type_html = Header::from_bytes("Content-Type", "text/html; charset=utf-8").expect("Might fail cause I aint no web developer");
+   let index_file_path = "src/index.html";
+   let index_file = File::open(index_file_path).map_err(|err|{
+      eprintln!("ERROR: couldn't open index file: {err}");
+   })?;
+   let response = Response::from_file(index_file).with_header(content_type_html);
+
+   request.respond(response).map_err(|err|{
+      eprintln!("ERROR: could not respond to request: {err}")
+   })?;
+
+   Ok(())
+}
 
 fn entry() -> Result<(),()>{
    let mut args = env::args();
@@ -264,13 +228,28 @@ fn entry() -> Result<(),()>{
          tf_index_of_folder(Path::new(&dir), &mut tf_index)?;
          save_tf_index(&tf_index, "index.json")?;
       },
+      
       "search" => {
          let index_path = args.next().ok_or_else(||{
             usage(&program);
             eprintln!("ERROR: No path to index is provided for {subcommand} subcommand");
          })?;
          check_index(&index_path)?;
-      }
+      },
+
+      "serve" =>{
+         let address = args.next().unwrap_or("127.0.0.1:6969".to_string());
+         let server = Server::http(&address).map_err(|err|{
+            eprintln!("ERROR: could not start server: {err}")
+         })?;
+
+         println!("Listening at: http://{address}/");
+
+         for request in server.incoming_requests() {
+            let _ = serve_request(request);
+         }
+      },
+
       _ => {
          usage(&program);
          eprintln!("ERROR: unknown subcommand {subcommand}");
@@ -286,3 +265,51 @@ fn main() -> ExitCode {
       Err(()) => ExitCode::FAILURE,
    }
 }
+
+/*
+fn main() -> io::Result<()> {
+   let index_path = "index.json";
+   let index_file = File::open(index_path)?;
+   let result: IndexTF = serde_json::from_reader(index_file).expect("Uhh No something went wrong");
+   println!("{index_path} contains {number} files", number = result.len());
+   Ok(())
+}
+
+fn main2() -> io::Result<()>{
+
+   let dir_path = "docs.gl/gl4";
+   let dir = fs::read_dir(dir_path)?;
+   let mut index_term_frequency = IndexTF::new();
+
+
+   for file in dir
+   {
+      let file_path = file?.path();
+      println!("Processing file: {:?}", &file_path);
+      let content = read_entire_xml_file(&file_path)?
+         .chars()
+         .collect::<Vec<_>>();
+
+      let mut tf = TermFrequency::new(); 
+      for token in Lexer::new(&content) 
+      {
+         let term = token.iter().map(|x| x.to_ascii_uppercase()).collect::<String>();
+         if let Some(freq) = tf.get_mut(&term) {
+            *freq += 1;
+         }else {
+            tf.insert(term, 1);
+         }
+      }
+      let mut stats = tf.iter().collect::<Vec<_>>();
+      stats.sort_by_key(|(_,f)| *f);
+      stats.reverse();
+      index_term_frequency.insert(file_path, tf);     
+   }
+   let index_path = "index.json";
+   let index_file = File::create(index_path)?;
+   println!("Saving {index_path}....");
+   serde_json::to_writer_pretty(index_file, &index_term_frequency).expect("Serde is working fine");
+   
+   Ok(())
+}
+*/
