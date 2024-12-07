@@ -295,7 +295,7 @@ fn entry() -> Result<(),()>{
          check_index(&index_path)?; //index.json
       },
 
-      /// serve has two arguments 1: path to index file, 2: IP address (127.0.0.1:6969 is default)
+      // serve has two arguments 1: path to index file, 2: IP address (127.0.0.1:6969 is default)
       "serve" =>{
          let index_path = args.next().ok_or_else(||{
             usage(&program);
