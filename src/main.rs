@@ -102,10 +102,10 @@ fn parse_entire_xml_file(file_path: &Path) -> Result<String, ()>{
 }
 
 //type keyword is used to define alias types 
-type TermFrequency = HashMap<String, usize>;
-type IndexTF = HashMap<PathBuf, TermFrequency>;
+type TermFrequency = HashMap<String, usize>; //file term-frequency
+type IndexTF = HashMap<PathBuf, TermFrequency>; //entire term-frequency
 
-
+//function to index the folder
 fn tf_index_of_folder(dir_path: &Path, index_term_frequency: &mut IndexTF) -> Result<(),()> {
 
       let dir = fs::read_dir(dir_path).map_err(|err|{
@@ -136,7 +136,6 @@ fn tf_index_of_folder(dir_path: &Path, index_term_frequency: &mut IndexTF) -> Re
             Err(()) => continue 'next_file,
          };
          
-
       let mut tf = TermFrequency::new();// HashMap of term frequency of each file
       for term in Lexer::new(&content){
          if let Some(frequency) = tf.get_mut(&term) {
@@ -203,11 +202,18 @@ fn serve_404(request: Request) -> Result<(), ()>{
    })
 }
 
-// tf-idf calculator for type TermFrequency
+// tf is the term frequency
 fn tf(current_term:  &str, freq_map: &TermFrequency) -> f32 {
    let s_f = freq_map.get(current_term).cloned().unwrap_or(0) as f32; //gets the frequency of the current term stored in freq_map
    let s_fx = freq_map.iter().map(|(_,f)| *f).sum::<usize>() as f32; //sum of the frequency of all the terms stored in freq_map
    s_f/s_fx //sigma_f and sigma_fx
+}
+
+//idf is the inverse document frequency
+fn idf(current_term: &str, index_term_frequency: &IndexTF) -> f32 {
+   let n = index_term_frequency.len() as f32;
+   let df = index_term_frequency.iter().filter(|(_, tf_table)| tf_table.contains_key(current_term)).count().max(1) as f32;
+   (n/df).ln()
 }
 
 //used to handle the request comming from the web page
@@ -226,15 +232,15 @@ fn serve_request(tf_index: &IndexTF, mut request: Request) -> Result<(),()> {
          
          let mut result= Vec::<(&Path, f32)>::new();
          for (path, tf_table) in tf_index{
-            let mut total_tf = 0f32;
+            let mut rank = 0f32;
             for token in Lexer::new(&body){
-               total_tf += tf(&token, &tf_table);
+               rank += tf(&token, &tf_table) * idf(&token, &tf_index);
             }
-            result.push((path, total_tf));
+            result.push((path, rank));
          }
          result.sort_by(|(_, rank1), (_, rank2)| rank1.partial_cmp(rank2).unwrap());
          result.reverse();
-         for (path, rank) in result{
+         for (path, rank) in result.iter().take(10){
             println!("     {path} => {rank}", path=path.display())
          }
          
@@ -261,7 +267,7 @@ fn usage(program: &str){
    eprintln!("Usage: {program} [SUBCOMMAND] [OPTIONS]");
    eprintln!("Subcommands:");
    eprintln!("    index <folder>                         index the <folder> and save the index to index.json file");
-   eprintln!("    search <index-file>                    check how many documents are indexed in the file (searching is not implementred yet)");
+   eprintln!("    search <index-file>                    check how many documents are indexed in the file");
    eprintln!("    serve  <index-file> [address]          to start the http server in a web interface");
 }
 
