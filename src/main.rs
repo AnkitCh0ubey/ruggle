@@ -1,81 +1,16 @@
-use core::str;
-use std::collections::HashMap;
-use std::{env, usize};
+use std::str;
+use std::env;
+use std::path::Path;
 use std::fs::{File, self};
 use xml::reader::{EventReader, XmlEvent };
-use std::path::{Path, PathBuf};
 use xml::common::{Position, TextPosition};
 use std::result::Result;
 use std::process::ExitCode;
-use tiny_http::{Header, Request, Response, Server, Method, StatusCode};
 
-#[derive(Debug)]
-struct Lexer<'a> {
-   content: &'a [char],
-}
 
-impl<'a> Lexer<'a> {
-   fn new(content: &'a [char]) -> Self{
-      Self{ content }
-   }
-
-   //removes white space
-   fn trim_left(&mut self){
-      while self.content.len() > 0 && self.content[0].is_whitespace() {
-         self.content = &self.content[1..]; 
-      }
-   }
-
-   //predicate is used to pass a condition similar to modifiers in solidity
-   fn chop_while<P>(&mut self, mut predicate: P) -> &'a [char] 
-   where 
-      P: FnMut(&char) -> bool 
-   {
-      let mut n = 0;
-      while n < self.content.len() && predicate(&self.content[n]){
-         n += 1;
-      }
-      self.chop(n)
-
-   }
-
-   // to get the set of characters from lexer
-   fn chop(&mut self, n: usize) -> &'a [char]{
-
-      let token = &self.content[..n];
-      self.content = &self.content[n..]; 
-      token 
-   }
-
-   //this method is used to tokenize the string from the document, similar to how a StringTokenizer works in Java
-   fn next_token(&mut self) -> Option<String> {
-
-      self.trim_left();
-
-      if self.content.len() == 0 {
-         return None
-      }
-
-      if self.content[0].is_alphabetic() { 
-         return Some(self.chop_while(|x| x.is_alphanumeric()).iter().map(|x| x.to_ascii_uppercase()).collect::<String>()); // this closure determines the base of predicate
-      } 
-      
-      if self.content[0].is_numeric() { 
-         return Some(self.chop_while(|x| x.is_numeric()).iter().collect());
-      }
-      //for all the other symbols, we need to just pass it as they are so just pass 1 
-      Some(self.chop(1).iter().collect())
-   }
-}
-
-// Since we implemented an iterator for lexer, it will give us a vector(array) of words.
-impl<'a> Iterator for Lexer<'a> {
-   type Item = String;
-   
-   fn next(&mut self) -> Option<Self::Item>{ // we get the next set of characters using the next function
-      self.next_token()
-   }
-}
+mod model;
+use model::*;
+mod server;
 
 //takes the file path as the input and parses the entire XML file into String
 fn parse_entire_xml_file(file_path: &Path) -> Result<String, ()>{ 
@@ -100,10 +35,6 @@ fn parse_entire_xml_file(file_path: &Path) -> Result<String, ()>{
    }
    Ok(content)
 }
-
-//type keyword is used to define alias types 
-type TermFrequency = HashMap<String, usize>; //file term-frequency
-type IndexTF = HashMap<PathBuf, TermFrequency>; //entire term-frequency
 
 //function to index the folder
 fn tf_index_of_folder(dir_path: &Path, index_term_frequency: &mut IndexTF) -> Result<(),()> {
@@ -163,104 +94,8 @@ fn save_tf_index(index_term_frequency: &IndexTF, filename: &str) -> Result<(),()
    serde_json::to_writer_pretty(file, &index_term_frequency).map_err(|err| {
       eprintln!("ERROR: could not serialize index into file {filename}: {err}")
    })?;
+
    Ok(())
-}
-
-fn check_index(index_path: &str) -> Result<(),()> {
-
-   //index_path is the name of the index file i.e., index.json
-    println!("Reading {index_path} index file...");
-
-    let index_file = File::open(index_path).map_err(|e|{
-      eprintln!("ERROR: couldn't open index file: {index_path}: {e}");
-    })?;
-
-    let tf_index: IndexTF = serde_json::from_reader(index_file).map_err(|e|{
-      eprintln!("ERROR: could not deserialize index from file {index_path}: {e}");
-    })?;
-
-    println!("{index_path} contains {count} files", count = tf_index.len());
-    Ok(())
-}
-
-fn serve_static_file(request: Request, file_path: &str, content_type: &str) -> Result<(),()>{
-   let content_type_header = Header::from_bytes("Content-Type", content_type)
-      .expect("Might fail cause I aint no web developer");
-   let file = File::open(file_path).map_err(|err|{
-      eprintln!("ERROR: couldn't open index file: {err}");
-   })?;
-   let response = Response::from_file(file).with_header(content_type_header);
-   
-   request.respond(response).map_err(|err|{
-      eprintln!("ERROR: could not serve the static file: {err}");
-   })
-}
-
-fn serve_404(request: Request) -> Result<(), ()>{
-   request.respond(Response::from_string("404").with_status_code(StatusCode(404))).map_err(|err|{
-      eprintln!("ERROR: could not respond to request: {err}");
-   })
-}
-
-// tf is the term frequency
-fn tf(current_term:  &str, freq_map: &TermFrequency) -> f32 {
-   let s_f = freq_map.get(current_term).cloned().unwrap_or(0) as f32; //gets the frequency of the current term stored in freq_map
-   let s_fx = freq_map.iter().map(|(_,f)| *f).sum::<usize>() as f32; //sum of the frequency of all the terms stored in freq_map
-   s_f/s_fx //sigma_f and sigma_fx
-}
-
-//idf is the inverse document frequency
-fn idf(current_term: &str, index_term_frequency: &IndexTF) -> f32 {
-   let n = index_term_frequency.len() as f32;
-   let df = index_term_frequency.iter().filter(|(_, tf_table)| tf_table.contains_key(current_term)).count().max(1) as f32;
-   (n/df).ln()
-}
-
-//used to handle the request comming from the web page
-fn serve_request(tf_index: &IndexTF, mut request: Request) -> Result<(),()> {
-
-   println!("Received requests! method: {:?}, url: {:?}", request.method(), request.url());
-   match (request.method(), request.url()) {
-
-      (Method::Post, "/api/search") =>{
-         let mut buf = Vec::new();
-         let _ = request.as_reader().read_to_end(&mut buf);
-         let body = str::from_utf8(&buf).map_err(|err|{
-            eprintln!("ERROR: could not parse the request body as UTF-8 string: {err}");
-         })?.chars().collect::<Vec<_>>();
-
-         
-         let mut result= Vec::<(&Path, f32)>::new();
-         for (path, tf_table) in tf_index{
-            let mut rank = 0f32;
-            for token in Lexer::new(&body){
-               rank += tf(&token, &tf_table) * idf(&token, &tf_index);
-            }
-            result.push((path, rank));
-         }
-         result.sort_by(|(_, rank1), (_, rank2)| rank1.partial_cmp(rank2).unwrap());
-         result.reverse();
-         for (path, rank) in result.iter().take(10){
-            println!("     {path} => {rank}", path=path.display())
-         }
-         
-         request.respond(Response::from_string("OK")).map_err(|err|{
-            eprintln!("ERROR: {err}");
-         })
-      }
-
-      (Method::Get, "/") | (Method::Get, "/index.html") => {
-        serve_static_file(request, "src/index.html", "text/html; charset=utf-8")
-      }
-
-      (Method::Get, "/index.js") =>{
-        serve_static_file(request, "index.js", "text/javascript; charset=utf-8")
-      }
-
-      _ => {
-         serve_404(request)
-      }
-   }
 }
 
 fn usage(program: &str){
@@ -298,7 +133,24 @@ fn entry() -> Result<(),()>{
             usage(&program);
             eprintln!("ERROR: No path to index is provided for {subcommand} subcommand");
          })?;
-         check_index(&index_path)?; //index.json
+
+         let query = args.next().ok_or_else(||{
+            usage(&program);
+            eprintln!("ERROR: No query is provided !");
+         })?.chars().collect::<Vec<_>>();
+
+         let index_file = File::open(&index_path).map_err(|e|{
+         eprintln!("ERROR: couldn't open index file: {index_path}: {e}");
+         })?;
+   
+         let tf_index: IndexTF = serde_json::from_reader(index_file).map_err(|e|{
+         eprintln!("ERROR: could not deserialize index from file {index_path}: {e}");
+         })?;
+
+         for(path, rank) in search(&tf_index, &query).iter().take(20){
+            println!("{path} {rank}", path = path.display());
+         }
+      
       },
 
       // serve has two arguments 1: path to index file, 2: IP address (127.0.0.1:6969 is default)
@@ -317,14 +169,7 @@ fn entry() -> Result<(),()>{
          })?;
 
          let address = args.next().unwrap_or("127.0.0.1:6969".to_string());
-         let server = Server::http(&address).map_err(|err|{
-            eprintln!("ERROR: could not start server: {err}")
-         })?;
-         println!("Listening at: http://{address}/");
-
-         for request in server.incoming_requests() {
-            let _ = serve_request(&tf_index, request);
-         }
+         return server::start(&address, &tf_index)         
       },
 
       _ => {
