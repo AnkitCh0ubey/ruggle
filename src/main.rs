@@ -6,6 +6,7 @@ use xml::reader::{EventReader, XmlEvent };
 use xml::common::{Position, TextPosition};
 use std::result::Result;
 use std::process::ExitCode;
+use std::io::{BufReader,BufWriter};
 
 
 mod model;
@@ -18,7 +19,7 @@ fn parse_entire_xml_file(file_path: &Path) -> Result<String, ()>{
       eprintln!("ERROR: could not open the file {file_path}: {e}", file_path=file_path.display());
    })?;
    
-   let er = EventReader::new(file);
+   let er = EventReader::new(BufReader::new(file));
    let mut content = String::new();
    
    for event in er.into_iter(){
@@ -91,7 +92,7 @@ fn save_tf_index(index_term_frequency: &IndexTF, filename: &str) -> Result<(),()
       eprintln!("ERROR: couldn't create index file:{filename}: {}", err);
    })?;
    
-   serde_json::to_writer_pretty(file, &index_term_frequency).map_err(|err| {
+   serde_json::to_writer_pretty(BufWriter::new(file), &index_term_frequency).map_err(|err| {
       eprintln!("ERROR: could not serialize index into file {filename}: {err}")
    })?;
 
@@ -102,7 +103,8 @@ fn usage(program: &str){
    eprintln!("Usage: {program} [SUBCOMMAND] [OPTIONS]");
    eprintln!("Subcommands:");
    eprintln!("    index <folder>                         index the <folder> and save the index to index.json file");
-   eprintln!("    search <index-file>                    check how many documents are indexed in the file");
+   eprintln!("    search <index-file>                    to query the json (expected to be called directly from the UI");
+   eprintln!("    total  <index-file>                     to get total number of files in the database");
    eprintln!("    serve  <index-file> [address]          to start the http server in a web interface");
 }
 
@@ -171,6 +173,21 @@ fn entry() -> Result<(),()>{
          let address = args.next().unwrap_or("127.0.0.1:6969".to_string());
          server::start(&address, &tf_index)         
       },
+
+      "total" =>{ 
+         let path = args.next().ok_or_else(||{
+            usage(&program);
+            eprintln!("ERROR: No path to db file is provided");
+         })?;
+         let file = File::open(&path).map_err(|err|{
+            eprintln!("ERROR: Couldn't open the file {path}: {err}");
+         })?;
+         let tf_index: IndexTF = serde_json::from_reader(file).map_err(|err|{
+            eprintln!("ERROR: couldn't deserialize the data from file {path}: {err}");
+         })?;
+         println!("Total files in the database: {len}", len=tf_index.len());
+         Ok(())
+      }
 
       _ => {
          usage(&program);
