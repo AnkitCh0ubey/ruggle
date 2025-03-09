@@ -125,7 +125,7 @@ fn entry() -> Result<(),()>{
          })?;
          let mut tf_index = IndexTF::new();
          tf_index_of_folder(Path::new(&dir), &mut tf_index)?;
-         save_tf_index(&tf_index, "index.json")?;
+         save_tf_index(&tf_index, "index.json")
       },
       
       "search" => {
@@ -150,7 +150,7 @@ fn entry() -> Result<(),()>{
          for(path, rank) in search(&tf_index, &query).iter().take(20){
             println!("{path} {rank}", path = path.display());
          }
-      
+      Ok(())
       },
 
       // serve has two arguments 1: path to index file, 2: IP address (127.0.0.1:6969 is default)
@@ -169,16 +169,15 @@ fn entry() -> Result<(),()>{
          })?;
 
          let address = args.next().unwrap_or("127.0.0.1:6969".to_string());
-         return server::start(&address, &tf_index)         
+         server::start(&address, &tf_index)         
       },
 
       _ => {
          usage(&program);
          eprintln!("ERROR: unknown subcommand {subcommand}");
-         return Err(());
+         Err(())
       }
    }
-   Ok(())
 }
 
 fn main() -> ExitCode {
