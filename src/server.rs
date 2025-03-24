@@ -34,7 +34,7 @@ fn serve_static_file(request: Request, file_path: &str, content_type: &str) -> i
  }
  
 
-fn serve_search_api(mut request: Request, tf_index: &IndexTF) -> io::Result<()> {
+fn serve_search_api(mut request: Request, model: &Model) -> io::Result<()> {
    let mut buf = Vec::new();
    if let Err(err) = request.as_reader().read_to_end(&mut buf){
       eprintln!("ERROR: Could not read from the reader: {err}");
@@ -48,7 +48,7 @@ fn serve_search_api(mut request: Request, tf_index: &IndexTF) -> io::Result<()> 
       }
    };
 
-   let result = search(tf_index, &body);
+   let result = search(model, &body);
 
    let json = match serde_json::to_string(&result.iter().take(20).collect::<Vec<_>>()){
       Ok(json) => json,
@@ -62,12 +62,12 @@ fn serve_search_api(mut request: Request, tf_index: &IndexTF) -> io::Result<()> 
    request.respond(Response::from_string(&json).with_header(content_type_header))
 }
 
- fn serve_request(tf_index: &IndexTF, request: Request) -> io::Result<()> {
+ fn serve_request(model: &Model, request: Request) -> io::Result<()> {
    println!("Received requests! method: {:?}, url: {:?}", request.method(), request.url());
    
    match (request.method(), request.url()) {
       (Method::Post, "/api/search") =>{
-         serve_search_api(request, tf_index)
+         serve_search_api(request, model)
       }
 
       (Method::Get, "/") | (Method::Get, "/index.html") => {
@@ -84,7 +84,7 @@ fn serve_search_api(mut request: Request, tf_index: &IndexTF) -> io::Result<()> 
    }
 }
 
- pub fn start(address: &str, tf_index: &IndexTF) -> Result<(),()>{
+ pub fn start(address: &str, model: &Model) -> Result<(),()>{
    let server = Server::http(&address).map_err(|err|{
       eprintln!("ERROR: could not start server at{address}: {err}");
    })?;
@@ -92,7 +92,7 @@ fn serve_search_api(mut request: Request, tf_index: &IndexTF) -> io::Result<()> 
    println!("INFO: Listening at: http://{address}/");
 
    for request in server.incoming_requests() {
-      serve_request(&tf_index, request).map_err(|err|{
+      serve_request(&model, request).map_err(|err|{
       eprintln!("ERROR: could not serve the response: {err}");
       }).ok(); // <- Keep the network open 
    }

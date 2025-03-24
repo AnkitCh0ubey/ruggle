@@ -38,7 +38,7 @@ fn parse_entire_xml_file(file_path: &Path) -> Result<String, ()>{
 }
 
 //function to index the folder
-fn tf_index_of_folder(dir_path: &Path, index_term_frequency: &mut IndexTF) -> Result<(),()> {
+fn add_folder_to_model(dir_path: &Path, model: &mut Model) -> Result<(),()> {
 
       let dir = fs::read_dir(dir_path).map_err(|err|{
          eprintln!("ERROR: could not open directory {dir_path} for indexing: {err}", dir_path = dir_path.display());
@@ -57,7 +57,7 @@ fn tf_index_of_folder(dir_path: &Path, index_term_frequency: &mut IndexTF) -> Re
          })?;
 
          if file_type.is_dir() {
-            tf_index_of_folder(&file_path, index_term_frequency)?;
+            add_folder_to_model(&file_path, model)?;
             continue 'next_file;
          }
 
@@ -69,15 +69,28 @@ fn tf_index_of_folder(dir_path: &Path, index_term_frequency: &mut IndexTF) -> Re
          };
          
       let mut tf = TermFrequency::new();// HashMap of term frequency of each file
+      let mut n = 0;
+      //to build term frequency of the model
       for term in Lexer::new(&content){
          if let Some(frequency) = tf.get_mut(&term) {
             *frequency += 1;
          } else {
             tf.insert(term, 1);
          }
+         n += 1;
+      }
+      
+      //to build document frequency (df) of the model
+      for t in tf.keys(){
+         if let Some(freq) = model.df.get_mut(t){
+            *freq += 1;
+         }
+         else{
+            model.df.insert(t.to_string(), 1);
+         }
       }
 
-      index_term_frequency.insert(file_path, tf);    
+      model.tfpf.insert(file_path, (n, tf));    
    
    }
 
@@ -85,14 +98,14 @@ fn tf_index_of_folder(dir_path: &Path, index_term_frequency: &mut IndexTF) -> Re
 
 }
 
-fn save_tf_index(index_term_frequency: &IndexTF, filename: &str) -> Result<(),()>{
+fn save_model(model: &Model, filename: &str) -> Result<(),()>{
    println!("Saving {filename}");
 
    let file = File::create(filename).map_err(|err|{
       eprintln!("ERROR: couldn't create index file:{filename}: {}", err);
    })?;
    
-   serde_json::to_writer_pretty(BufWriter::new(file), &index_term_frequency).map_err(|err| {
+   serde_json::to_writer_pretty(BufWriter::new(file), &model).map_err(|err| {
       eprintln!("ERROR: could not serialize index into file {filename}: {err}")
    })?;
 
@@ -125,9 +138,10 @@ fn entry() -> Result<(),()>{
             usage(&program);
             eprintln!("ERROR: no directory is provided for {subcommand} subcommand")
          })?;
-         let mut tf_index = IndexTF::new();
-         tf_index_of_folder(Path::new(&dir), &mut tf_index)?;
-         save_tf_index(&tf_index, "index.json")
+         let mut model:Model  = Default::default();
+         add_folder_to_model(Path::new(&dir), &mut model)?;
+
+         save_model(&model, "index-big.json")
       },
       
       "search" => {
@@ -145,11 +159,12 @@ fn entry() -> Result<(),()>{
          eprintln!("ERROR: couldn't open index file: {index_path}: {e}");
          })?;
    
-         let tf_index: IndexTF = serde_json::from_reader(index_file).map_err(|e|{
+         let model: Model = serde_json::from_reader(index_file).map_err(|e|{
          eprintln!("ERROR: could not deserialize index from file {index_path}: {e}");
          })?;
 
-         for(path, rank) in search(&tf_index, &query).iter().take(20){
+         //calling to model's search function happens here!
+         for(path, rank) in search(&model, &query).iter().take(20){
             println!("{path} {rank}", path = path.display());
          }
       Ok(())
@@ -166,12 +181,12 @@ fn entry() -> Result<(),()>{
             eprintln!("ERROR: couldn't open index file: {index_path}: {e}");
          })?;
       
-         let tf_index: IndexTF = serde_json::from_reader(index_file).map_err(|e|{
+         let model: Model = serde_json::from_reader(index_file).map_err(|e|{
             eprintln!("ERROR: could not deserialize index from file {index_path}: {e}");
          })?;
 
          let address = args.next().unwrap_or("127.0.0.1:6969".to_string());
-         server::start(&address, &tf_index)         
+         server::start(&address, &model)         
       },
 
       "total" =>{ 
@@ -182,7 +197,7 @@ fn entry() -> Result<(),()>{
          let file = File::open(&path).map_err(|err|{
             eprintln!("ERROR: Couldn't open the file {path}: {err}");
          })?;
-         let tf_index: IndexTF = serde_json::from_reader(file).map_err(|err|{
+         let tf_index: TermFreqPerFile = serde_json::from_reader(file).map_err(|err|{
             eprintln!("ERROR: couldn't deserialize the data from file {path}: {err}");
          })?;
          println!("Total files in the database: {len}", len=tf_index.len());
@@ -209,7 +224,7 @@ fn main() -> ExitCode {
 fn main() -> io::Result<()> {
    let index_path = "index.json";
    let index_file = File::open(index_path)?;
-   let result: IndexTF = serde_json::from_reader(index_file).expect("Uhh No something went wrong");
+   let result: TermFreqPerFile = serde_json::from_reader(index_file).expect("Uhh No something went wrong");
    println!("{index_path} contains {number} files", number = result.len());
    Ok(())
 }
@@ -218,7 +233,7 @@ fn main2() -> io::Result<()>{
 
    let dir_path = "docs.gl/gl4";
    let dir = fs::read_dir(dir_path)?;
-   let mut index_term_frequency = IndexTF::new();
+   let mut index_term_frequency = TermFreqPerFile::new();
 
 
    for file in dir
